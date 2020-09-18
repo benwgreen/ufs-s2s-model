@@ -4,6 +4,8 @@ set -eux
 write_fail_test() {
   if [[ ${UNIT_TEST} == true ]]; then
     echo ${TEST_NR} $TEST_NAME >> $PATHRT/fail_unit_test
+  else
+    echo $TEST_NAME >> $PATHRT/fail_test
   fi
 }
 
@@ -37,7 +39,7 @@ export CNTL_DIR=${CNTL_DIR}${BL_SUFFIX}
 JBNME=$(basename $RUNDIR_ROOT)_${TEST_NR}
 export JBNME
 
-export FV3X=fv3_mom6_cice_${COMPILE_NR}.exe
+export FV3X=fcst_${COMPILE_NR}.exe
 
 UNIT_TEST=${UNIT_TEST:-false}
 if [[ ${UNIT_TEST} == false ]]; then

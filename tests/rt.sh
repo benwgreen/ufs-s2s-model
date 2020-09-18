@@ -27,6 +27,66 @@ usage() {
 
 [[ $# -eq 0 ]] && usage
 
+rt_single() {
+  local compile_line=''
+  local run_line=''
+  while read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ ${#line} == 0 ]] && continue
+    [[ $line == \#* ]] && continue
+
+    if [[ $line =~ COMPILE && $line =~ ${MACHINE_ID} ]]; then
+      compile_line=$line
+    fi
+
+    if [[ $line =~ RUN ]]; then
+      tmp_test=$(echo $line | cut -d'|' -f2 | sed -e 's/^ *//' -e 's/ *$//')
+      if [[ $SINGLE_NAME == $tmp_test && $compile_line != '' ]]; then
+        echo $compile_line >$TESTS_FILE
+        echo $line >>$TESTS_FILE
+        break
+      fi
+    fi
+  done <'rt.conf'
+
+  if [[ ! -f $TESTS_FILE ]]; then
+    echo "$SINGLE_NAME does not exist or cannot be run on $MACHINE_ID"
+    exit 1
+  fi
+}
+
+rt_35d() {
+  local sy=$(echo ${DATE_35D} | cut -c 1-4)
+  local sm=$(echo ${DATE_35D} | cut -c 5-6)
+  local new_test_name="tests/${TEST_NAME}_${DATE_35D}"
+  rm -f tests/$new_test_name
+  cp tests/$TEST_NAME $new_test_name
+
+  if [[ $TEST_NAME =~ cold$ ]]; then
+    sed -i -e "s/\(export LIST_FILES\)/\1=\"ufs.s2s.cold.cpl.r.${sy}-${sm}-01-03600.nc\"/" $new_test_name
+    sed -i -e "s/\(export SYEAR\)/\1=\"$sy\"/" $new_test_name
+    sed -i -e "s/\(export SMONTH\)/\1=\"$sm\"/" $new_test_name
+    if [[ $TEST_NAME =~ ww3 ]]; then
+      sed -i -e "s/\(export CNTL_DIR\)/\1='RT-Baselines_cold_bmwav_cmeps_${DATE_35D}'/" $new_test_name
+      sed -i -e "s/\(export CNTLMED_DIR\)/\1='MEDIATOR_bmwav_cmeps_${DATE_35D}'/" $new_test_name
+    else
+      sed -i -e "s/\(export CNTL_DIR\)/\1='RT-Baselines_cold_bm_cmeps_${DATE_35D}'/" $new_test_name
+      sed -i -e "s/\(export CNTLMED_DIR\)/\1='MEDIATOR_bm_cmeps_${DATE_35D}'/" $new_test_name
+    fi
+  elif [[ $TEST_NAME =~ 35d$ ]]; then
+    sed -i -e "s/\(export SYEAR\)/\1=\"$sy\"/" $new_test_name
+    sed -i -e "s/\(export SMONTH\)/\1=\"$sm\"/" $new_test_name
+    DEP_RUN=${DEP_RUN}_${DATE_35D}
+    if [[ $TEST_NAME =~ ww3 ]]; then
+      sed -i -e "s/\(export MED_restart_data\)/\1='MEDIATOR_bmwav_cmeps_${DATE_35D}'/" $new_test_name
+    else
+      sed -i -e "s/\(export MED_restart_data\)/\1='MEDIATOR_bm_cmeps_${DATE_35D}'/" $new_test_name
+    fi
+  fi
+
+  TEST_NAME=${new_test_name#tests/}
+}
+
 rt_trap() {
   [[ ${ROCOTO:-false} == true ]] && rocoto_kill
   cleanup
@@ -67,26 +127,7 @@ export COMPILER=${NEMS_COMPILER:-intel}
 source detect_machine.sh
 source rt_utils.sh
 
-if [[ $MACHINE_ID = wcoss ]]; then
-
-  source $PATHTR/NEMS/src/conf/module-setup.sh.inc
-
-  set +u
-  source /usrx/local/ecflow/setup.sh
-  ECFLOW_START=/usrx/local/ecflow/bin/ecflow_start.sh
-  set -u
-  ROCOTORUN="/u/Christopher.W.Harrop/rocoto/bin/rocotorun"
-  ROCOTOSTAT="/u/Christopher.W.Harrop/rocoto/bin/rocotostat"
-  DISKNM=/nems/noscrub/emc.nemspara/RT
-  QUEUE=debug
-  PARTITION=
-  ACCNR=GFS-DEV
-  STMP=/ptmpp$pex
-  PTMP=/ptmpp$pex
-  SCHEDULER=lsf
-# cp fv3_conf/fv3_bsub.IN_wcoss fv3_conf/fv3_bsub.IN
-
-elif [[ $MACHINE_ID = wcoss_cray ]]; then
+if [[ $MACHINE_ID = wcoss_cray ]]; then
 
   source $PATHTR/NEMS/src/conf/module-setup.sh.inc
   module load xt-lsfhpc
@@ -142,7 +183,7 @@ elif [[ $MACHINE_ID = wcoss_dell_p3 ]]; then
   ECF_PORT=$(grep $USER /usrx/local/sys/ecflow/assigned_ports.txt | awk '{print $2}')
 
   DISKNM=/gpfs/dell2/emc/modeling/noscrub/emc.nemspara/RT
-  QUEUE=debug
+  QUEUE=dev
   PARTITION=
   ACCNR=GFS-DEV
   STMP=/gpfs/dell2/stmp
@@ -226,7 +267,7 @@ elif [[ $MACHINE_ID = orion.* ]]; then
 #  ACCNR= # detected in detect_machine.sh
   PARTITION=orion
   dprefix=/work/noaa/stmp/${USER}
-  DISKNM=/work/noaa/stmp/jminsuk/RT
+  DISKNM=/work/noaa/nems/emc.nemspara/RT
   STMP=$dprefix/stmp
   PTMP=$dprefix/stmp
 
@@ -321,6 +362,8 @@ CREATE_BASELINE=false
 ROCOTO=false
 ECFLOW=false
 KEEP_RUNDIR=false
+SINGLE_NAME=''
+TEST_35D=false
 
 TESTS_FILE='rt.conf'
 # Switch to special regression test config on wcoss_cray:
@@ -330,7 +373,7 @@ if [[ $MACHINE_ID = wcoss_cray ]]; then
 fi
 
 SET_ID='standard'
-while getopts ":cfsl:mkreh" opt; do
+while getopts ":cfsl:mn:kreh" opt; do
   case $opt in
     c)
       CREATE_BASELINE=true
@@ -349,6 +392,12 @@ while getopts ":cfsl:mkreh" opt; do
     m)
       # redefine RTPWD to point to newly created baseline outputs
       RTPWD=${NEW_BASELINE}
+      ;;
+    n)
+      SINGLE_NAME=$OPTARG
+      TESTS_FILE='rt.conf.single'
+      SET_ID=' '
+      rm -f $TESTS_FILE
       ;;
     k)
       KEEP_RUNDIR=true
@@ -375,10 +424,18 @@ while getopts ":cfsl:mkreh" opt; do
   esac
 done
 
+if [[ $SINGLE_NAME != '' ]]; then
+  rt_single
+fi
+
+if [[ $TESTS_FILE =~ '35d' ]]; then
+  TEST_35D=true
+fi
+
 if [[ $MACHINE_ID = cheyenne.* ]]; then
   RTPWD=${RTPWD:-$DISKNM/develop-20200210/${COMPILER^^}}
 else
-  RTPWD=${RTPWD:-$DISKNM/FV3-MOM6-CICE5/develop-20200504}
+  RTPWD=${RTPWD:-$DISKNM/FV3-MOM6-CICE5/develop-20200907}
 fi
 
 shift $((OPTIND-1))
@@ -418,6 +475,8 @@ if [[ $CREATE_BASELINE == true ]]; then
   #rsync -a "${RTPWD}"/fv3_stretched/INPUT            "${NEW_BASELINE}"/fv3_stretched/
   #rsync -a "${RTPWD}"/fv3_stretched_nest/INPUT       "${NEW_BASELINE}"/fv3_stretched_nest/
   #rsync -a "${RTPWD}"/fv3_stretched_nest_quilt/INPUT "${NEW_BASELINE}"/fv3_stretched_nest_quilt/
+
+  RTPWD=${NEW_BASELINE}
 fi
 
 COMPILE_LOG=${PATHRT}/Compile_$MACHINE_ID.log
@@ -496,7 +555,7 @@ fi
 if [[ $ECFLOW == true ]]; then
 
   ECFLOW_RUN=${PATHRT}/ecflow_run
-  ECFLOW_SUITE=regtest
+  ECFLOW_SUITE=regtest_$$
   rm -rf ${ECFLOW_RUN}
   mkdir -p ${ECFLOW_RUN}/${ECFLOW_SUITE}
   cp head.h tail.h ${ECFLOW_RUN}
@@ -566,20 +625,19 @@ while read -r line; do
       elif [[ $ECFLOW == true ]]; then
         ecflow_create_compile_task
       else
-        #./compile.sh $PATHTR/FV3 $MACHINE_ID "${NEMS_VER}" $COMPILE_NR > ${LOG_DIR}/compile_${COMPILE_NR}.log 2>&1
-        ./compile.sh ${NEMS_VER} $COMPILE_NR > ${LOG_DIR}/compile_${COMPILE_NR}.log 2>&1
+        ./compile.sh $PATHTR/FV3 $MACHINE_ID "${NEMS_VER}" $COMPILE_NR > ${LOG_DIR}/compile_${COMPILE_NR}.log 2>&1
         echo " bash Compile is done"
       fi
 
       # Set RT_SUFFIX (regression test run directories and log files) and BL_SUFFIX
       # (regression test baseline directories) for REPRO (IPD, CCPP) or PROD (CCPP) runs
-      if [[ ${NEMS_VER^^} =~ "REPRO=Y" ]]; then
-        RT_SUFFIX="_repro"
-        BL_SUFFIX="_repro"
-      elif [[ ${NEMS_VER^^} =~ "CCPP=Y" ]]; then
-        RT_SUFFIX="_prod"
-        BL_SUFFIX="_ccpp"
-      fi
+      #if [[ ${NEMS_VER^^} =~ "REPRO=Y" ]]; then
+      #  RT_SUFFIX="_repro"
+      #  BL_SUFFIX="_repro"
+      #elif [[ ${NEMS_VER^^} =~ "CCPP=Y" ]]; then
+      #  RT_SUFFIX="_prod"
+      #  BL_SUFFIX="_ccpp"
+      #fi
 
       if [[ ${NEMS_VER^^} =~ "WW3=Y" ]]; then
          COMPILE_PREV_WW3_NR=${COMPILE_NR}
@@ -633,10 +691,15 @@ while read -r line; do
     MACHINES=$( echo $line | cut -d'|' -f4)
     CB=$(       echo $line | cut -d'|' -f5)
     DEP_RUN=$(  echo $line | cut -d'|' -f6 | sed -e 's/^ *//' -e 's/ *$//')
+    DATE_35D=$( echo $line | cut -d'|' -f7 | sed -e 's/^ *//' -e 's/ *$//')
+
     [[ -e "tests/$TEST_NAME" ]] || die "run test file tests/$TEST_NAME does not exist"
     [[ $SET_ID != ' ' && $SET != *${SET_ID}* ]] && continue
     [[ $MACHINES != ' ' && $MACHINES != *${MACHINE_ID}* ]] && continue
     [[ $CREATE_BASELINE == true && $CB != *fv3* ]] && continue
+
+    # 35 day tests
+    [[ $TEST_35D == true ]] && rt_35d
 
     # skip all *_appbuild runs if rocoto or ecFlow is used. FIXME
     if [[ ${ROCOTO} == true && ${ECFLOW} == true ]]; then
@@ -684,6 +747,7 @@ EOF
       export PARTITION=${PARTITION}
       export ROCOTO=${ROCOTO}
       export LOG_DIR=${LOG_DIR}
+      export DEP_RUN=${DEP_RUN}
 EOF
 
       if [[ $ROCOTO == true ]]; then
@@ -740,9 +804,10 @@ else
    echo ; echo REGRESSION TEST WAS SUCCESSFUL
   (echo ; echo REGRESSION TEST WAS SUCCESSFUL) >> ${REGRESSIONTEST_LOG}
 
-  rm -f fv3_*.x fv3_*.exe modules.fv3_*
+  rm -f fcst_*.x fcst_*.exe modules.fcst_*
   [[ ${KEEP_RUNDIR} == false ]] && rm -rf ${RUNDIR_ROOT}
   [[ ${ROCOTO} == true ]] && rm -f ${ROCOTO_XML} ${ROCOTO_DB} *_lock.db
+  [[ ${TEST_35D} == true ]] && rm -f tests/cpld_*cmeps*_20*
 fi
 
 date >> ${REGRESSIONTEST_LOG}

@@ -342,7 +342,7 @@ check_results() {
       printf %s " Comparing " $i " ....."
 
       crst=''
-      if [[ $i =~ MOM6_RESTART/ || $i =~ restart ]]; then
+      if [[ $i =~ RESTART/ ]]; then
         crst=RESTART/$(basename $i)
       fi
 
@@ -378,7 +378,9 @@ check_results() {
 
         if [[ $i =~ mediator ]]; then
           d=$( cmp ${RTPWD}/${CNTLMED_DIR}/$i ${RUNDIR}/$i | wc -l )
-        elif [[ $i =~ MOM6_RESTART/ || $i =~ restart ]]; then
+        elif [[ $i =~ ufs.s2s ]]; then
+          d=$( cmp ${RTPWD}/${CNTLMED_DIR}/$i ${RUNDIR}/$i | wc -l )
+        elif [[ $i =~ RESTART/ ]]; then
           d=$( cmp ${RTPWD}/${CNTL_DIR}/$crst ${RUNDIR}/$i | wc -l )
         else
           d=$( cmp ${RTPWD}/${CNTL_DIR}/$i ${RUNDIR}/$i | wc -l )
@@ -414,12 +416,12 @@ check_results() {
     for i in ${LIST_FILES} ; do
       printf %s " Moving " $i " ....."   >> ${REGRESSIONTEST_LOG}
       if [[ -f ${RUNDIR}/$i ]] ; then
-        if [[ $i =~ MOM6_RESTART/ ]]; then
+        if [[ $i =~ RESTART/ ]]; then
           cp ${RUNDIR}/$i ${NEW_BASELINE}/${CNTL_DIR}/RESTART/$(basename $i)
         elif [[ $i =~ mediator ]]; then
           cp ${RUNDIR}/$i ${NEW_BASELINE}/${CNTLMED_DIR}
-        elif [[ $i =~ restart ]]; then
-          cp ${RUNDIR}/$i ${NEW_BASELINE}/${CNTL_DIR}/RESTART/$(basename $i)
+        elif [[ $i =~ ufs.s2s ]]; then
+          cp ${RUNDIR}/$i ${NEW_BASELINE}/${CNTLMED_DIR}
         else
           cp ${RUNDIR}/${i} ${NEW_BASELINE}/${CNTL_DIR}/${i}
         fi
@@ -482,7 +484,8 @@ rocoto_create_compile_task() {
       rocoto_cmd="&PATHRT;/appbuild.sh &PATHTR;/FV3 $APP $COMPILE_NR"
   else
       #rocoto_cmd="&PATHRT;/compile_cmake.sh &PATHTR; $MACHINE_ID \"${NEMS_VER}\" $COMPILE_NR"
-      rocoto_cmd="&PATHRT;/compile.sh ${NEMS_VER} $COMPILE_NR"
+      rocoto_cmd="$PATHRT/compile.sh ${PATHTR}/FV3 $MACHINE_ID \"${NEMS_VER}\" $COMPILE_NR"
+      #rocoto_cmd="&PATHRT;/compile.sh ${NEMS_VER} $COMPILE_NR"
   fi
 
   NATIVE=""
@@ -539,7 +542,7 @@ EOF
 
 rocoto_create_run_task() {
 
-  if [[ $DEP_RUN != '' ]]; then
+  if [[ $CREATE_BASELINE == true && $DEP_RUN != '' ]] || [[ $WARM_START == .T. && $DEP_RUN != '' ]]; then
     DEP_STRING="<and> <taskdep task=\"compile_${COMPILE_NR}\"/> <taskdep task=\"${DEP_RUN}${RT_SUFFIX}\"/> </and>"
   else
     DEP_STRING="<taskdep task=\"compile_${COMPILE_NR}\"/>"
@@ -611,7 +614,8 @@ ecflow_create_compile_task() {
       ecflow_cmd="$PATHRT/appbuild.sh ${PATHTR}/FV3 $APP $COMPILE_NR > ${LOG_DIR}/compile_${COMPILE_NR}.log 2>&1"
   else
       #ecflow_cmd="$PATHRT/compile_cmake.sh ${PATHTR} $MACHINE_ID \"${NEMS_VER}\" $COMPILE_NR > ${LOG_DIR}/compile_${COMPILE_NR}.log 2>&1"
-      ecflow_cmd="$PATHRT/compile.sh ${NEMS_VER} $COMPILE_NR > ${LOG_DIR}/compile_${COMPILE_NR}.log 2>&1"
+      ecflow_cmd="$PATHRT/compile.sh ${PATHTR}/FV3 $MACHINE_ID \"${NEMS_VER}\" $COMPILE_NR > ${LOG_DIR}/compile_${COMPILE_NR}.log 2>&1"
+      #ecflow_cmd="$PATHRT/compile.sh ${NEMS_VER} $COMPILE_NR > ${LOG_DIR}/compile_${COMPILE_NR}.log 2>&1"
   fi
 
   cat << EOF > ${ECFLOW_RUN}/${ECFLOW_SUITE}/compile_${COMPILE_NR}.ecf
@@ -638,12 +642,10 @@ EOF
 
   echo "    task ${TEST_NAME}${RT_SUFFIX}" >> ${ECFLOW_RUN}/${ECFLOW_SUITE}.def
   echo "      inlimit max_jobs" >> ${ECFLOW_RUN}/${ECFLOW_SUITE}.def
-  if [[ $DEP_RUN != '' ]]; then
-    if [[ ${UNIT_TEST} == false ]]; then
-      echo "      trigger compile_${COMPILE_NR} == complete and ${DEP_RUN}${RT_SUFFIX} == complete" >> ${ECFLOW_RUN}/${ECFLOW_SUITE}.def
-    else
-      echo "      trigger compile_${COMPILE_NR} == complete and ${DEP_RUN} == complete" >> ${ECFLOW_RUN}/${ECFLOW_SUITE}.def
-    fi
+  if [[ ${UNIT_TEST} == true && $DEP_RUN != '' ]]; then
+    echo "      trigger compile_${COMPILE_NR} == complete and ${DEP_RUN} == complete" >> ${ECFLOW_RUN}/${ECFLOW_SUITE}.def
+  elif [[ $CREATE_BASELINE == true && $DEP_RUN != '' ]] || [[ $WARM_START == .T. && $DEP_RUN != '' ]]; then
+    echo "      trigger compile_${COMPILE_NR} == complete and ${DEP_RUN}${RT_SUFFIX} == complete" >> ${ECFLOW_RUN}/${ECFLOW_SUITE}.def
   else
     echo "      trigger compile_${COMPILE_NR} == complete" >> ${ECFLOW_RUN}/${ECFLOW_SUITE}.def
   fi
@@ -656,37 +658,24 @@ ecflow_run() {
 
   ECF_HOST=$( hostname )
 
-  sh ${ECFLOW_START} -d ${ECFLOW_RUN} -p ${ECF_PORT} >> ${ECFLOW_RUN}/ecflow.log 2>&1
-
-#  set +e
-#  i=0
-#  max_atempts=5
-#  while [[ $i -lt $max_atempts ]]; do
-#    ecflow_client --ping --host=${ECF_HOST} --port=${ECF_PORT}
-#    not_running=$?
-#    if [[ $not_running -eq 1 ]]; then
-#      echo "ecflow_server is NOT running on ${ECF_HOST}:${ECF_PORT}"
-#      sh ${ECFLOW_START} -d ${ECFLOW_RUN} -p ${ECF_PORT} >> ${ECFLOW_RUN}/ecflow.log 2>&1
-#      break
-#    else
-#      echo "ecflow_server is already running on ${ECF_HOST}:${ECF_PORT}"
-#      ECF_PORT=$(( ECF_PORT + 1 ))
-#    fi
-#    i=$(( i + 1 ))
-#    if [[ $i -eq $max_atempts ]]; then
-#       echo "You already have $max_atempts ecFlow servers running on this node"
-#       exit 1
-#    fi
-#  done
-#  set -e
+  set +e
+  ecflow_client --ping --host=${ECF_HOST} --port=${ECF_PORT}
+  not_running=$?
+  if [[ $not_running -eq 1 ]]; then
+    echo "ecflow_server is NOT running on ${ECF_HOST}:${ECF_PORT}"
+    sh ${ECFLOW_START} -p ${ECF_PORT}
+  else
+    echo "ecflow_server is already running on ${ECF_HOST}:${ECF_PORT}"
+  fi
+  set -e
 
   ECFLOW_RUNNING=true
 
   export ECF_PORT
   export ECF_HOST
 
-  ecflow_client --load=${ECFLOW_RUN}/${ECFLOW_SUITE}.def            >> ${ECFLOW_RUN}/ecflow.log 2>&1
-  ecflow_client --begin=${ECFLOW_SUITE}                             >> ${ECFLOW_RUN}/ecflow.log 2>&1
+  ecflow_client --load=${ECFLOW_RUN}/${ECFLOW_SUITE}.def
+  ecflow_client --begin=${ECFLOW_SUITE}
 
   active_tasks=1
   while [[ $active_tasks -ne 0 ]]
@@ -697,6 +686,8 @@ ecflow_run() {
     ${PATHRT}/abort_dep_tasks.py
   done
   sleep 65 # wait one ECF_INTERVAL plus 5 seconds
+  ecflow_client --delete=yes /${ECFLOW_SUITE}
+  sleep 5
 }
 
 ecflow_kill() {
@@ -711,7 +702,11 @@ ecflow_stop() {
    [[ ${ECFLOW_RUNNING:-false} == true ]] || return
    set +e
    wait
-   ecflow_client --halt=yes
-   ecflow_client --check_pt
-   ecflow_client --terminate=yes
+   SUITES=$( ecflow_client --get | grep "^suite" )
+   echo "SUITES=${SUITES}"
+   if [ -z "${SUITES}" ]; then
+     ecflow_client --halt=yes
+     ecflow_client --check_pt
+     ecflow_client --terminate=yes
+   fi
 }

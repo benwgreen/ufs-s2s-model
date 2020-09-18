@@ -13,10 +13,10 @@ cd $RUNDIR
 ###############################################################################
 
 # FV3 executable:
-cp ${PATHRT}/$FV3X                                 fv3_mom6_cice.exe
+cp ${PATHRT}/$FV3X                                 fcst.exe
 
 # modulefile for FV3 prerequisites:
-cp ${PATHRT}/modules.fv3_mom6_cice_${COMPILE_NR}             modules.fv3
+cp ${PATHRT}/modules.fcst_${COMPILE_NR}             modules.fcst
 
 # Get the shell file that loads the "module" command and purges modules:
 cp ${PATHRT}/../NEMS/src/conf/module-setup.sh.inc  module-setup.sh
@@ -36,9 +36,13 @@ atparse < ${PATHTR}/parm/${MODEL_CONFIGURE:-model_configure.IN} > model_configur
 atparse < ${PATHTR}/parm/${NEMS_CONFIGURE:-nems.configure} > nems.configure
 
 edit_ice_in < ${PATHTR}/parm/ice_in_template > ice_in
-edit_mom_input < ${PATHTR}/parm/MOM_input_template > INPUT/MOM_input
+edit_mom_input < ${PATHTR}/parm/${MOM_INPUT:-MOM_input_template_$OCNRES} > INPUT/MOM_input
 edit_diag_table < ${PATHTR}/parm/diag_table_template > diag_table
-cp ${PATHTR}/parm/data_table data_table
+edit_data_table < ${PATHTR}/parm/data_table_template > data_table
+# CMEPS 
+cp ${PATHTR}/parm/fd_nems.yaml fd_nems.yaml
+cp ${PATHTR}/parm/pio_in pio_in
+cp ${PATHTR}/parm/med_modelio.nml med_modelio.nml
 
 if [[ "Q${INPUT_NEST02_NML:-}" != Q ]] ; then
     atparse < ${PATHTR}/parm/${INPUT_NEST02_NML} > input_nest02.nml
